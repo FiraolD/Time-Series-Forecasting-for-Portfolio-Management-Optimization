@@ -74,8 +74,9 @@ try:
 
     # Forecast
     n_periods = len(test)
-    arima_forecast = arima_result.forecast(steps=n_periods)
-    arima_pred_df = pd.DataFrame(arima_forecast, index=test.index[:n_periods], columns=['ARIMA'])
+    arima_forecast = arima_result.get_forecast(steps=n_periods)
+    arima_pred_df = pd.DataFrame(arima_forecast.predicted_mean, index=test.index, columns=['ARIMA'])
+    #arima_pred_df = pd.DataFrame(arima_forecast, index=test.index[:n_periods], columns=['ARIMA'])
 
 except Exception as e:
     print(f"ARIMA model failed: {e}")
@@ -91,8 +92,8 @@ if not arima_pred_df.isna().all().values:
     conf_int = arima_result.get_forecast(steps=n_periods).conf_int()
     conf_int.index = test.index[:n_periods]
     plt.fill_between(conf_int.index,
-                     conf_int.iloc[:, 0], conf_int.iloc[:, 1],
-                     color='green', alpha=0.2, label='95% Confidence Interval')
+                    conf_int.iloc[:, 0], conf_int.iloc[:, 1],
+                    color='green', alpha=0.2, label='95% Confidence Interval')
 plt.title("TSLA Price Forecast: ARIMA(2,1,2) Model")
 plt.xlabel("Date")
 plt.ylabel("Price ($)")
