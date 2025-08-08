@@ -1,5 +1,5 @@
 """
-File: task2_forecasting_models.py
+File: forecast_model.py
 Author: Financial Analyst - Guide Me in Finance (GMF) Investments
 Date: August 2025
 Description: Build and compare ARIMA (using statsmodels) and LSTM models to forecast TSLA prices.
@@ -14,9 +14,16 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import warnings
+import joblib
+import os
 
-# Suppress warnings for cleaner output
-warnings.filterwarnings("ignore")
+# -----------------------------
+# Suppress warnings
+# -----------------------------
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Suppress TensorFlow oneDNN warning
+
 plt.style.use('seaborn-v0_8')
 
 # -----------------------------
@@ -27,21 +34,19 @@ try:
     # Load CSV and parse index as datetime
     prices = pd.read_csv("Data/processed_prices.csv", index_col=0, parse_dates=[0])
 
-    
-    # Convert index to timezone-naive datetime, safely
+    # Convert index to timezone-naive datetime
     prices.index = pd.to_datetime(prices.index, utc=True).tz_localize(None)
 
     tsla = prices[['TSLA']].copy()
     print(f"Data loaded successfully. Shape: {tsla.shape}")
-    print(f"Index type: {tsla.index.dtype}")  # Should show: datetime64[ns]
+    print(f"Index type: {tsla.index.dtype}")
 except FileNotFoundError:
-    raise FileNotFoundError("processed_prices.csv not found. Run preprocessor.py first.")
+    raise FileNotFoundError("Data/processed_prices.csv not found. Run preprocessor.py first.")
 
 # -----------------------------
 # 2. Train-Test Split (Chronological)
 # -----------------------------
 split_date = '2023-12-31'
-
 train = tsla[tsla.index <= split_date]
 test = tsla[tsla.index > split_date]
 
@@ -67,7 +72,7 @@ plt.show()
 # -----------------------------
 print("\n[ARIMA] Fitting ARIMA(2,1,2) model...")
 try:
-    arima_model = ARIMA(train['TSLA'], order=(2, 1, 2))  # (p,d,q)
+    arima_model = ARIMA(train['TSLA'], order=(2, 1, 2))
     arima_result = arima_model.fit()
 
     print(arima_result.summary())
@@ -75,8 +80,11 @@ try:
     # Forecast
     n_periods = len(test)
     arima_forecast = arima_result.get_forecast(steps=n_periods)
-    arima_pred_df = pd.DataFrame(arima_forecast.predicted_mean, index=test.index, columns=['ARIMA'])
-    #arima_pred_df = pd.DataFrame(arima_forecast, index=test.index[:n_periods], columns=['ARIMA'])
+    arima_pred_df = pd.DataFrame(
+        arima_forecast.predicted_mean,
+        index=test.index[:n_periods],
+        columns=['ARIMA']
+    )
 
 except Exception as e:
     print(f"ARIMA model failed: {e}")
@@ -88,9 +96,8 @@ plt.plot(train.index, train['TSLA'], label='Train', color='blue')
 plt.plot(test.index, test['TSLA'], label='Actual', color='black', linewidth=2)
 if not arima_pred_df.isna().all().values:
     plt.plot(arima_pred_df.index, arima_pred_df['ARIMA'], label='ARIMA Forecast', color='green')
-    # Optional: Add confidence interval
-    conf_int = arima_result.get_forecast(steps=n_periods).conf_int()
-    conf_int.index = test.index[:n_periods]
+    conf_int = arima_forecast.conf_int()
+    conf_int.index = arima_pred_df.index
     plt.fill_between(conf_int.index,
                     conf_int.iloc[:, 0], conf_int.iloc[:, 1],
                     color='green', alpha=0.2, label='95% Confidence Interval')
@@ -110,6 +117,7 @@ try:
     from tensorflow.keras.models import Sequential
     from tensorflow.keras.layers import LSTM, Dense, Dropout
     from tensorflow.keras.optimizers import Adam
+    from tensorflow.keras import losses, metrics
 except ImportError:
     raise ImportError("TensorFlow not installed. Run: pip install tensorflow")
 
@@ -126,12 +134,10 @@ def create_sequences(data, seq_length):
         y.append(data[i, 0])
     return np.array(X), np.array(y)
 
-SEQ_LENGTH = 60  # Use past 60 days
-
+SEQ_LENGTH = 60
 X_train, y_train = create_sequences(train_scaled, SEQ_LENGTH)
 X_test, y_test = create_sequences(test_scaled, SEQ_LENGTH)
 
-# Reshape for LSTM (samples, timesteps, features)
 X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
 X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
 
@@ -148,7 +154,12 @@ lstm_model = Sequential([
     Dense(1)
 ])
 
-lstm_model.compile(optimizer=Adam(learning_rate=0.001), loss='mse', metrics=['mae'])
+# ✅ Use explicit loss/metrics classes to avoid deserialization issues
+lstm_model.compile(
+    optimizer=Adam(learning_rate=0.001),
+    loss=losses.MeanSquaredError(),
+    metrics=[metrics.MeanAbsoluteError()]
+)
 
 # Train model
 print("\n[LSTM] Training model...")
@@ -174,7 +185,7 @@ plt.savefig("outputs/lstm_training_loss.png", dpi=300)
 plt.show()
 
 # Make predictions
-lstm_pred_scaled = lstm_model.predict(X_test)
+lstm_pred_scaled = lstm_model.predict(X_test, verbose=0)
 lstm_pred = scaler.inverse_transform(lstm_pred_scaled)
 y_test_actual = scaler.inverse_transform(y_test.reshape(-1, 1))
 
@@ -204,15 +215,16 @@ def evaluate_model(y_true, y_pred, name):
     mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
     return {"Model": name, "MAE": mae, "RMSE": rmse, "MAPE (%)": mape}
 
-# Align test data with predictions
+# Align test data
 test_aligned = test.iloc[-len(lstm_pred):]
 
-# Evaluate ARIMA only if valid
+# Evaluate ARIMA
 if not arima_pred_df.isna().any().values:
     arima_eval = evaluate_model(test_aligned['TSLA'].values, arima_pred_df['ARIMA'].values, "ARIMA")
 else:
     arima_eval = {"Model": "ARIMA", "MAE": np.nan, "RMSE": np.nan, "MAPE (%)": np.nan}
 
+# Evaluate LSTM
 lstm_eval = evaluate_model(test_aligned['TSLA'].values, lstm_pred_df['LSTM'].values, "LSTM")
 
 results = pd.DataFrame([arima_eval, lstm_eval])
@@ -220,19 +232,28 @@ print("\n📊 Model Comparison:")
 print(results)
 
 # Save evaluation
+os.makedirs("outputs", exist_ok=True)
 results.to_csv("outputs/model_comparison.csv", index=False)
 arima_pred_df.to_csv("outputs/arima_forecast.csv")
 lstm_pred_df.to_csv("outputs/lstm_forecast.csv")
 
-print("\n✅ All forecasts, evaluations, and plots have been saved to 'outputs/' folder.")
+# -----------------------------
+# 6. Save Model & Scaler
+# -----------------------------
+# ✅ Save model and scaler for future use
+lstm_model.save("outputs/lstm_model.h5")
+joblib.dump(scaler, "outputs/scaler.pkl")
+print("\n✅ Model and scaler saved successfully to 'outputs/' folder.")
 
 # -----------------------------
-# 6. Summary for Investment Memo
+# 7. Summary for Investment Memo
 # -----------------------------
 if not np.isnan(arima_eval["RMSE"]) and arima_eval["RMSE"] < lstm_eval["RMSE"]:
     best_model = "ARIMA"
+    best_rmse = arima_eval["RMSE"]
 else:
     best_model = "LSTM"
+    best_rmse = lstm_eval["RMSE"]
 
-print(f"\n💡 Conclusion: {best_model} performed better on test data based on RMSE.")
+print(f"\n💡 Conclusion: {best_model} performed better on test data (RMSE: {best_rmse:.2f}).")
 print("This will be used to generate 6–12 month forecasts in Task 3.")
