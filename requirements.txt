@@ -8,3 +8,4 @@ pmdarima
 tensorflow 
 scikit-learn 
 PyPortfolioOpt
+pypfopt
